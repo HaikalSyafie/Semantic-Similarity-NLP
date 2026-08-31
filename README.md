@@ -33,7 +33,7 @@ The proposed model consists of several components that transform input text into
 ### Architecture
 
 <p align="center">
-  <img src="results/architecture/proposed_model.png" width="850"/>
+  <img src="Assets/Architecture.png" width="850"/>
 </p>
 
 *Figure 1. Proposed model architecture.*
@@ -134,7 +134,7 @@ The heatmap provides a token-level view of the relationships learned by the atte
 ### Attention Heatmap
 
 <p align="center">
-  <img src="results/attention/attention_heatmap.png" width="850"/>
+  <img src="Assets/Attention.png" width="850"/>
 </p>
 
 *Figure 2. Attention heatmap generated from the proposed model.*
@@ -246,7 +246,7 @@ Training and validation curves are analyzed to monitor model learning and identi
 ### Training & Validation Curves
 
 <p align="center">
-  <img src="results/training/training_curve.png" width="850"/>
+  <img src="Assets/val_loss.png" width="850"/>
 </p>
 
 *Figure 3. Training and validation performance across epochs.*
@@ -268,7 +268,7 @@ The model is evaluated using classification metrics to measure its ability to di
 ### ROC-AUC
 
 <p align="center">
-  <img src="results/evaluation/roc_auc.png" width="700"/>
+  <img src="Assets/val_loss.png" width="700"/>
 </p>
 
 *Figure 4. ROC curve and AUC performance.*
