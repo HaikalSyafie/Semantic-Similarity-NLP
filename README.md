@@ -1,406 +1,311 @@
-# Semantic Similarity with Attention
+<h1 align="center">Semantic Similarity with Attention</h1>
 
-A Natural Language Processing (NLP) project focused on measuring semantic similarity between text pairs using an attention-based neural architecture.
+<p align="center">
+  <em>A Siamese BiLSTM encoder with additive attention pooling and multi-metric distance fusion for sentence-pair semantic matching.</em>
+</p>
 
-The project explores how attention mechanisms can capture relationships between words and how multiple similarity measures can be fused to improve semantic similarity prediction.
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python"/>
+  <img src="https://img.shields.io/badge/TensorFlow-2.x-FF6F00?logo=tensorflow&logoColor=white" alt="TensorFlow"/>
+  <img src="https://img.shields.io/badge/Keras-Functional_API-D00000?logo=keras&logoColor=white" alt="Keras"/>
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="License"/>
+</p>
 
 ---
 
-## 1. Project Overview
+## TL;DR
 
-Semantic similarity measures how closely two pieces of text are related in meaning.
-
-For example:
+Two sentences can mean the same thing while sharing almost no words:
 
 ```text
-Sentence 1:
-"How do I reset my password?"
-
-Sentence 2:
-"I forgot my password. How can I change it?"
+A: "How do I reset my password?"
+B: "I forgot my password. How can I change it?"
 ```
 
-Although the wording is different, both sentences express a similar intent.
+Lexical overlap says *different*; intent says *same*. This project closes that gap with a Siamese network that (1) encodes each sentence with a shared **BiLSTM + additive attention pooling** layer, and (2) compares the two resulting vectors through **three complementary distance geometries at once** — angular (cosine), city-block (Manhattan), and straight-line (Euclidean) — concatenating them with the embeddings and letting an MLP learn the decision boundary.
 
-This project develops an attention-based model to learn semantic relationships between text pairs and combines multiple similarity measures to produce the final prediction.
+**The claim under test:** a single distance metric discards information. Direction and magnitude are different signals, and giving the classifier all three costs ~0 parameters while measurably improving separation.
 
 ---
 
-## 2. Proposed Architecture
-
-The proposed model consists of several components that transform input text into contextual representations, calculate multiple similarity measures, and combine them for the final prediction.
-
-### Architecture
+## 1. Architecture
 
 <p align="center">
-  <img src="Assets/Architecture.png" width="850"/>
+  <img src="Assets/Architecture.png" width="850" alt="Proposed model architecture"/>
 </p>
 
-*Figure 1. Proposed model architecture.*
-
-### Model Pipeline
+<p align="center"><em>Figure 1 — Proposed model architecture.</em></p>
 
 ```text
-Input Text Pair
-      ↓
-Tokenization
-      ↓
-Embedding
-      ↓
-Attention Mechanism
-      ↓
-Contextual Representation
-      ↓
-Sentence Representation
-      ↓
-┌───────────────────────────────┐
-│       Fusion Similarity       │
-│                               │
-│  Cosine    Manhattan    Euclidean
-└───────────────────────────────┘
-      ↓
-Fusion Layer
-      ↓
-Prediction
+q1 (70 tokens) ──┐                                              ┌──► v1 (512) ──┐
+                 ├─► Embedding (frozen, pretrained) ─► BiLSTM ──┤               ├─► d_cos, d_man, d_euc
+q2 (70 tokens) ──┘   shared weights          256 units, shared  └──► v2 (512) ──┘        │
+                                             return_sequences                            │
+                                                     │                                   │
+                                          Additive Attention (64)  ◄───────────────┐     │
+                                          shared, sequence → vector                │     │
+                                                                                   ▼     ▼
+                                              Concat [ v1 ‖ v2 ‖ d_cos ‖ d_man ‖ d_euc ]  (1027)
+                                                                  ↓
+                                              Dense 64 → Dropout 0.3 → Dense 32 → Dropout 0.3
+                                                                  ↓
+                                                      Dense 1, sigmoid → P(similar)
 ```
 
----
+Every component — embedding, BiLSTM, attention — is **shared** between the two branches. That is what makes the network Siamese: both sentences are projected by the *same* function into a single comparable space, so the distances computed downstream are meaningful.
 
-## 3. Attention Mechanism
+### Configuration
 
-The proposed architecture uses the scaled dot-product attention mechanism.
+| Component | Setting |
+| :--- | :--- |
+| Sequence length | 70 tokens (padded/truncated) |
+| Embedding | Pretrained matrix, **frozen** (`trainable=False`) |
+| Encoder | `Bidirectional(LSTM(256, return_sequences=True))` → 512-d per token |
+| Attention | Additive (Bahdanau), 64 hidden units → 512-d sentence vector |
+| Fusion input | `[v1 ‖ v2 ‖ d_cos ‖ d_man ‖ d_euc]` → 1027-d |
+| Classifier | Dense 64 (ReLU) → Dropout 0.3 → Dense 32 (ReLU) → Dropout 0.3 → Dense 1 (sigmoid) |
+| Loss / Optimizer | Binary cross-entropy / Adam, lr = 1e-4 |
 
-Given Query, Key, and Value matrices:
-
-$$
-Q = XW_Q
-$$
-
-$$
-K = XW_K
-$$
-
-$$
-V = XW_V
-$$
-
-The attention mechanism is defined as:
-
-$$
-\text{Attention}(Q,K,V)
-=
-\text{softmax}
-\left(
-\frac{QK^T}{\sqrt{d_k}}
-\right)V
-$$
-
-where:
-
-* $Q$ = Query matrix
-* $K$ = Key matrix
-* $V$ = Value matrix
-* $d_k$ = dimensionality of the key vectors
-* $W_Q$, $W_K$, and $W_V$ = trainable projection matrices
-
-### Multi-Head Attention
-
-For multi-head attention:
-
-$$
-\text{MultiHead}(Q,K,V)
-=
-\text{Concat}(head_1,\ldots,head_h)W_O
-$$
-
-where:
-
-$$
-head_i =
-\text{Attention}
-(QW_i^Q,KW_i^K,VW_i^V)
-$$
-
-Multiple attention heads allow the model to capture different relationships between tokens.
+Freezing the embedding is a deliberate trade: the model cannot adapt word vectors to the task, but it also cannot overfit them, and every trainable parameter goes into the encoder and the comparison head instead.
 
 ---
 
-## 4. Attention Visualization
+## 2. Additive Attention Pooling
 
-To analyze how the model processes the input text, attention weights are visualized using a heatmap.
+The BiLSTM emits one hidden state per token, $H = [h_1, \ldots, h_T]$ with $h_t \in \mathbb{R}^{512}$. A sentence-level decision needs a single vector, so the sequence must be collapsed. Mean-pooling would weight a stopword the same as the head noun; this layer learns the weights instead.
 
-The heatmap provides a token-level view of the relationships learned by the attention mechanism.
+**Additive (Bahdanau-style) attention** scores each token, normalises the scores over time, and returns their weighted sum:
 
-### Attention Heatmap
+$$
+e_t = v^{\top} \tanh(W h_t + b)
+$$
+
+$$
+\alpha_t = \frac{\exp(e_t)}{\sum_{j=1}^{T} \exp(e_j)}
+$$
+
+$$
+c = \sum_{t=1}^{T} \alpha_t \, h_t
+$$
+
+| Symbol | Shape | Role |
+| :--- | :--- | :--- |
+| $h_t$ | $\mathbb{R}^{512}$ | BiLSTM hidden state at position $t$ |
+| $W, b$ | $\mathbb{R}^{512 \times 64}$, $\mathbb{R}^{64}$ | Projects each token into the attention space |
+| $v$ | $\mathbb{R}^{64}$ | **Learned global query** — a single vector, shared across all sentences |
+| $\alpha_t$ | scalar | Relevance of token $t$; $\sum_t \alpha_t = 1$ |
+| $c$ | $\mathbb{R}^{512}$ | Sentence representation |
+
+### What this mechanism is — and is not
+
+The vector $v$ acts as one learned query asking the same question of every sentence: *which tokens carry the meaning?* Each token is scored **independently** against that query.
+
+This matters for how results are interpreted, because it makes the layer fundamentally different from the Transformer's scaled dot-product attention:
+
+| | Additive attention pooling (this model) | Scaled dot-product self-attention |
+| :--- | :--- | :--- |
+| Query source | One learned vector $v$, fixed for all inputs | Every token queries every other token |
+| Output per input | One weight per token → vector $\alpha \in \mathbb{R}^{T}$ | One weight per token *pair* → matrix $\mathbb{R}^{T \times T}$ |
+| Models token↔token interaction | No | Yes |
+| Role in the network | Learned pooling (replaces mean/max) | Contextual re-encoding |
+| Parameters | $512 \times 64 + 64 + 64 + 1 = 32{,}897$ | $4 d^2$ per layer (Q, K, V, O) |
+
+The consequence: **attention output here is a 1-D vector of token importances, not a token×token matrix.** It should be visualised as highlighted text or a bar strip over the sentence — a square heatmap would be misleading, because this layer never computes a token-to-token score.
+
+---
+
+## 3. Distance Fusion
+
+Given the two pooled representations $u = v_1$ and $w = v_2$, the model computes three distances. **All three are distances, not similarities — lower means more similar in every case**, which keeps the sign convention consistent for the classifier.
+
+### 3.1 Cosine distance — *direction*
+
+$$
+d_{\cos}(u,w) = 1 - \frac{u \cdot w}{\lVert u \rVert \, \lVert w \rVert}
+$$
+
+Angular disagreement between the two vectors, invariant to their magnitude. Bounded in $[0, 2]$, which makes it stable, but blind to *how strongly* a feature is expressed.
+
+### 3.2 Manhattan distance — *per-dimension disagreement*
+
+$$
+d_{\text{man}}(u,w) = \log\!\left(1 + \sum_{i=1}^{512} \lvert u_i - w_i \rvert\right)
+$$
+
+The sum of absolute differences. Because it never squares the residuals, it stays sensitive to *many small* mismatches rather than being dominated by one large one.
+
+### 3.3 Euclidean distance — *overall displacement*
+
+$$
+d_{\text{euc}}(u,w) = \log\!\left(1 + \sqrt{\sum_{i=1}^{512} (u_i - w_i)^2 + \varepsilon}\right), \qquad \varepsilon = 10^{-8}
+$$
+
+Straight-line geometric distance. Squaring makes it Manhattan's opposite in temperament: a single badly mismatched dimension dominates the score. The $\varepsilon$ term keeps the gradient of $\sqrt{\cdot}$ finite when the two vectors coincide — without it, identical sentences produce `NaN` during backpropagation.
+
+### Why the logarithm
+
+Raw L1 distance over 512 dimensions can reach the hundreds while cosine distance never exceeds 2. Fed into the same Dense layer, the unscaled distances would dominate purely through magnitude. The $\log(1+d)$ transform compresses them onto a comparable range and is monotonic, so the ordering the metric encodes is preserved exactly.
+
+### 3.4 Fusion and prediction
+
+$$
+m = \left[\, v_1 \;\Vert\; v_2 \;\Vert\; d_{\cos} \;\Vert\; d_{\text{man}} \;\Vert\; d_{\text{euc}} \,\right] \in \mathbb{R}^{1027}
+$$
+
+$$
+\hat{y} = \sigma\Big(W_3 \cdot \text{drop}\big(\text{ReLU}(W_2 \cdot \text{drop}(\text{ReLU}(W_1 m)))\big)\Big)
+$$
+
+The MLP is free to learn how much to trust each geometry, rather than having fixed weights imposed by hand.
+
+| Distance | Sensitive to | Cost |
+| :--- | :--- | ---: |
+| Cosine | Orientation only | 0 params |
+| Manhattan | Many small differences | 0 params |
+| Euclidean | A few large differences | 0 params |
+
+All three are parameter-free Lambda operations. The entire fusion hypothesis costs **3 extra input features and zero weights** — which is precisely what makes it worth testing.
+
+---
+
+## 4. Results
+
+### 4.1 Baseline Comparison
+
+| Model | Trainable Params | Accuracy | Precision | Recall | F1 | ROC-AUC |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline | `XX,XXX` | `XX.XX%` | `XX.XX%` | `XX.XX%` | `XX.XX%` | `XX.XX` |
+| **Proposed (BiLSTM + Attention + Fusion)** | **`XX,XXX`** | **`XX.XX%`** | **`XX.XX%`** | **`XX.XX%`** | **`XX.XX%`** | **`XX.XX`** |
 
 <p align="center">
-  <img src="Assets/Attention.png" width="850"/>
+  <img src="results/evaluation/model_comparison.png" width="850" alt="Baseline vs proposed model comparison"/>
 </p>
 
-*Figure 2. Attention heatmap generated from the proposed model.*
+<p align="center"><em>Figure 2 — Baseline vs. proposed model across all metrics.</em></p>
 
-Higher attention weights indicate stronger interactions between tokens.
+> **Note.** Keras `compile()` reports accuracy, precision and recall directly; **F1 and ROC-AUC are not logged by default**. Compute F1 as the harmonic mean $2PR/(P+R)$ and ROC-AUC with `sklearn.metrics.roc_auc_score` on the sigmoid outputs.
 
----
-
-## 5. Fusion Similarity
-
-The proposed model does not rely on a single similarity measure.
-
-Instead, it combines three different similarity/distance measures:
-
-* **Cosine Similarity**
-* **Manhattan Distance**
-* **Euclidean Distance**
-
-Each measure captures a different aspect of the relationship between two sentence representations.
-
-### 5.1 Cosine Similarity
-
-Given two sentence representations $u$ and $v$:
-
-$$
-\text{Cosine}(u,v)
-=
-\frac{u \cdot v}
-{\|u\|\|v\|}
-$$
-
-Cosine similarity measures the angular similarity between two embeddings.
-
-A higher value indicates that the two representations point in a more similar direction.
-
----
-
-### 5.2 Manhattan Distance
-
-The Manhattan distance is defined as:
-
-$$
-D_{\text{Manhattan}}(u,v)
-=
-\sum_{i=1}^{n}|u_i-v_i|
-$$
-
-It measures the absolute difference between corresponding dimensions of two sentence representations.
-
-A smaller distance indicates that the representations are closer.
-
----
-
-### 5.3 Euclidean Distance
-
-The Euclidean distance is defined as:
-
-$$
-D_{\text{Euclidean}}(u,v)
-=
-\sqrt{\sum_{i=1}^{n}(u_i-v_i)^2}
-$$
-
-It measures the geometric distance between two sentence representations.
-
-A smaller distance indicates greater similarity between the representations.
-
----
-
-### 5.4 Similarity Fusion
-
-The outputs from the three similarity measures are combined through the fusion layer:
-
-$$
-S_{\text{fusion}}
-=
-f
-\left(
-S_{\text{cosine}},
-D_{\text{Manhattan}},
-D_{\text{Euclidean}}
-\right)
-$$
-
-where $f(\cdot)$ represents the fusion mechanism used by the proposed architecture.
-
-The resulting fused representation is then passed to the prediction layer.
-
-### Fusion Pipeline
-
-```text
-Sentence A ──→ Encoder ──→ Embedding A ──┐
-                                         │
-                                         ├──→ Cosine Similarity ──┐
-Sentence B ──→ Encoder ──→ Embedding B ──┤                        │
-                                         ├──→ Manhattan Distance ─┤
-                                         │                        ├──→ Fusion ──→ Prediction
-                                         └──→ Euclidean Distance ─┘
-```
-
-The combination of these measures allows the model to capture both **directional similarity** and **distance-based relationships** between sentence embeddings.
-
----
-
-## 6. Training Performance
-
-Training and validation curves are analyzed to monitor model learning and identify potential overfitting or underfitting.
-
-### Training & Validation Curves
+### 4.2 Training Dynamics
 
 <p align="center">
-  <img src="Assets/val_loss.png" width="850"/>
+  <img src="results/training/training_curve.png" width="850" alt="Training and validation curves"/>
 </p>
 
-*Figure 3. Training and validation performance across epochs.*
+<p align="center"><em>Figure 3 — Training and validation loss across epochs.</em></p>
 
-The curves are used to analyze:
+Read for convergence speed, the train–validation gap (overfitting), plateau height (underfitting), and step-to-step stability. With `lr = 1e-4` and a frozen embedding, expect slow but smooth convergence — a curve still descending at the final epoch means the budget, not the architecture, was the limit.
 
-* Training convergence
-* Validation performance
-* Overfitting
-* Underfitting
-* Training stability
-
----
-
-## 7. Model Evaluation
-
-The model is evaluated using classification metrics to measure its ability to distinguish between semantically similar and dissimilar text pairs.
-
-### ROC-AUC
+### 4.3 Discrimination — ROC-AUC
 
 <p align="center">
-  <img src="Assets/val_loss.png" width="700"/>
+  <img src="results/evaluation/roc_auc.png" width="700" alt="ROC curve"/>
 </p>
 
-*Figure 4. ROC curve and AUC performance.*
+<p align="center"><em>Figure 4 — ROC curve and AUC.</em></p>
 
-ROC-AUC measures the model's ability to distinguish between positive and negative semantic similarity pairs.
+ROC-AUC is the headline metric: it is threshold-independent, so it measures ranking quality — how reliably any similar pair scores above any dissimilar pair — rather than performance at one arbitrary cut-off of 0.5.
 
----
-
-## 8. Baseline Comparison
-
-The proposed architecture is compared against a baseline model to evaluate the contribution of the attention and fusion mechanisms.
-
-| Model              | Trainable Parameters |   Accuracy |  Precision |     Recall |         F1 |   ROC-AUC |
-| ------------------ | -------------------: | ---------: | ---------: | ---------: | ---------: | --------: |
-| Baseline           |             `XX,XXX` |   `XX.XX%` |   `XX.XX%` |   `XX.XX%` |   `XX.XX%` |   `XX.XX` |
-| **Proposed Model** |           **XX,XXX** | **XX.XX%** | **XX.XX%** | **XX.XX%** | **XX.XX%** | **XX.XX** |
-
-### Model Performance Comparison
-
-<p align="center">
-  <img src="results/evaluation/model_comparison.png" width="850"/>
-</p>
-
-*Figure 5. Performance comparison between the baseline and proposed model.*
-
----
-
-## 9. Trainable Parameters
-
-The number of trainable parameters is analyzed to compare the complexity of the proposed model against the baseline.
-
-Trainable parameters are the weights that are updated during the training process.
+### 4.4 Model Complexity
 
 ```python
-trainable_params = sum(
-    p.numel()
-    for p in model.parameters()
-    if p.requires_grad
-)
+model.summary()
+trainable = sum(w.numpy().size for w in model.trainable_weights)
 ```
 
-### Parameter Comparison
+Parameter budget by component (embedding excluded — it is frozen):
 
-```text
-Baseline Model:
-XX,XXX trainable parameters
+| Component | Trainable Parameters |
+| :--- | ---: |
+| Bidirectional LSTM (256) | `XXX,XXX` |
+| Additive Attention (64) | 32,897 |
+| Classifier head (1027 → 64 → 32 → 1) | 67,905 |
+| Distance layers | 0 |
+| **Total** | **`X,XXX,XXX`** |
 
-Proposed Model:
-XX,XXX trainable parameters
+The BiLSTM dominates: the attention and fusion machinery together account for a small fraction of the model. The number worth reporting is therefore **accuracy gained per parameter added** — a large gain from a small delta is the result to claim.
+
+### 4.5 Interpretability — Attention Weights
+
+<p align="center">
+  <img src="Assets/Attention.png" width="850" alt="Attention weights over tokens"/>
+</p>
+
+<p align="center"><em>Figure 5 — Learned token importances α over an example pair.</em></p>
+
+Since $\alpha$ is one weight per token, the natural visualisation is the sentence itself with each token shaded by its weight. The diagnostic question: does the model concentrate mass on the tokens carrying shared intent (*reset* ↔ *change*, *password* ↔ *password*), or does it spread weight over stopwords and padding?
+
+---
+
+## 5. Key Findings
+
+- [ ] Attention pooling outperforms mean-pooling over the same BiLSTM
+- [ ] Fusing three distances beats any single-distance ablation
+- [ ] The proposed model beats the baseline on F1 and ROC-AUC
+- [ ] The gain justifies the added parameters
+- [ ] Attention weights concentrate on semantically load-bearing tokens
+
+> Fill each box with the measured number once experiments are final. The decisive experiment is the **ablation in §6** — without it, an improvement over the baseline cannot be attributed to the fusion rather than to the BiLSTM.
+
+---
+
+## 6. Planned Ablations
+
+The concatenation feeds the classifier 1024 embedding dimensions alongside 3 distance scalars. The MLP is therefore *able* to solve the task from `[v1 ‖ v2]` alone and ignore the distances entirely. Three runs settle whether it does:
+
+| # | Fusion input | Isolates |
+| :--- | :--- | :--- |
+| A | `[v1 ‖ v2]` only | Contribution of the distances |
+| B | `[d_cos ‖ d_man ‖ d_euc]` only | Whether the distances are sufficient on their own |
+| C | One distance at a time + `[v1 ‖ v2]` | Whether all three are needed, or one carries the gain |
+
+If **A** matches the full model, the fusion adds nothing and the honest conclusion is that the BiLSTM encoder is doing the work. If **B** approaches the full model with ~1,000× fewer head parameters, that is the more interesting result.
+
+---
+
+## 7. Quick Start
+
+```bash
+git clone https://github.com/HaikalSyafie/Semantic-Similarity-NLP.git
+cd Semantic-Similarity-NLP
+pip install -r requirements.txt
 ```
 
-This analysis provides insight into the trade-off between model complexity and predictive performance.
+```bash
+# Train
+python src/train.py
+
+# Inspect attention weights
+jupyter notebook notebooks/attention_visualization.ipynb
+```
+
+**Stack:** Python · TensorFlow / Keras · scikit-learn · pandas · NumPy · Matplotlib
 
 ---
 
-## 10. Results Summary
-
-The proposed model is evaluated from three main perspectives:
-
-### Predictive Performance
-
-Performance is evaluated using:
-
-* Accuracy
-* Precision
-* Recall
-* F1-score
-* ROC-AUC
-
-### Model Complexity
-
-The number of trainable parameters is compared with the baseline to quantify the complexity of the proposed architecture.
-
-### Interpretability
-
-Attention weights are visualized to provide insight into token-level relationships learned by the model.
-
----
-
-## 11. Key Findings
-
-The experiments investigate whether the proposed architecture can:
-
-* Capture semantic relationships between text pairs
-* Utilize attention to learn contextual token relationships
-* Combine multiple similarity measures effectively
-* Improve predictive performance compared with the baseline
-* Maintain a reasonable number of trainable parameters
-* Provide interpretable attention patterns
-
----
-
-## 12. Technologies
-
-* Python
-* PyTorch
-* Hugging Face Transformers
-* Scikit-learn
-* Pandas
-* NumPy
-* Matplotlib
-
----
-
-## 13. Project Structure
+## 8. Project Structure
 
 ```text
 Semantic-Similarity-NLP/
 │
-├── data/
+├── Assets/                          # Figures embedded in this README
+│   ├── Architecture.png
+│   └── Attention.png
+│
+├── data/                            # Raw and processed sentence pairs
 │
 ├── notebooks/
 │   ├── training.ipynb
 │   └── attention_visualization.ipynb
 │
 ├── src/
-│   ├── model.py
-│   ├── dataset.py
-│   └── train.py
+│   ├── model.py                     # AdditiveAttention, build_proposed, build_baseline
+│   ├── dataset.py                   # Tokenization, padding, embedding matrix
+│   └── train.py                     # Training and evaluation loop
 │
-├── models/
+├── models/                          # Saved checkpoints (.keras)
 │
 ├── results/
-│   ├── architecture/
-│   │   └── proposed_model.png
-│   │
-│   ├── attention/
-│   │   └── attention_heatmap.png
-│   │
-│   ├── training/
-│   │   └── training_curve.png
-│   │
+│   ├── training/training_curve.png
 │   └── evaluation/
 │       ├── roc_auc.png
 │       └── model_comparison.png
@@ -411,43 +316,21 @@ Semantic-Similarity-NLP/
 
 ---
 
-## 14. Installation
+## 9. Roadmap
 
-Clone the repository:
-
-```bash
-git clone https://github.com/HaikalSyafie/Semantic-Similarity-NLP.git
-cd Semantic-Similarity-NLP
-```
-
-Install the required dependencies:
-
-```bash
-pip install -r requirements.txt
-```
+| Priority | Item |
+| :--- | :--- |
+| High | Run the §6 ablations to isolate the fusion contribution |
+| High | Mask padding inside the attention softmax (see implementation notes) |
+| High | Make the pair encoding order-invariant — `[\|v1−v2\| ‖ v1⊙v2]` instead of raw concat |
+| Medium | Compare BiLSTM against the BiGRU variant at matched parameter count |
+| Medium | Unfreeze the embedding for the final epochs and measure the effect |
+| Medium | Sweep attention units and sequence length |
+| Low | Inference optimisation — quantization, TFLite / ONNX export |
+| Low | Serve the model as a FastAPI REST endpoint |
 
 ---
 
-## 15. Usage
-
-Run the training pipeline:
-
-```bash
-python src/train.py
-```
-
-To visualize attention weights, run:
-
-```text
-notebooks/attention_visualization.ipynb
-```
-
----
-
-## 16. Future Improvements
-
-* Fine-tune the architecture on larger semantic similarity datasets
-* Experiment with different attention configurations
-* Analyze attention patterns across different sentence pairs
-* Optimize inference performance
-* Deploy the model as a REST API using FastAPI
+<p align="center">
+  <sub>Built by <a href="https://github.com/HaikalSyafie">Haikal Syafie</a></sub>
+</p>
